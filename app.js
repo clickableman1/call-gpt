@@ -17,23 +17,33 @@ ExpressWs(app);
 
 const PORT = process.env.PORT || 3000;
 
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
 app.post('/incoming', (req, res) => {
   try {
+    console.log('Incoming request:', req.body); // Log the incoming request
     const response = new VoiceResponse();
+    response.say('Hello, This is Julia from 3Z');
     const connect = response.connect();
-    connect.stream({ url: `wss://${process.env.SERVER}/connection` });
-  
+    connect.stream({ url: `wss://${process.env.SERVER.replace('https://', '')}/connection` });
+
     res.type('text/xml');
-    res.end(response.toString());
+    res.send(response.toString());
   } catch (err) {
     console.log(err);
+    res.status(500).send('Internal Server Error');
   }
+});
+
+app.post('/status', (req, res) => {
+  console.log('Call Status:', req.body); // Log the status callback
+  res.sendStatus(200);
 });
 
 app.ws('/connection', (ws) => {
   try {
     ws.on('error', console.error);
-    // Filled in from start message
     let streamSid;
     let callSid;
 
@@ -41,24 +51,22 @@ app.ws('/connection', (ws) => {
     const streamService = new StreamService(ws);
     const transcriptionService = new TranscriptionService();
     const ttsService = new TextToSpeechService({});
-  
+
     let marks = [];
     let interactionCount = 0;
-  
-    // Incoming from MediaStream
+
     ws.on('message', function message(data) {
       const msg = JSON.parse(data);
       if (msg.event === 'start') {
         streamSid = msg.start.streamSid;
         callSid = msg.start.callSid;
-        
+
         streamService.setStreamSid(streamSid);
         gptService.setCallSid(callSid);
 
-        // Set RECORDING_ENABLED='true' in .env to record calls
         recordingService(ttsService, callSid).then(() => {
           console.log(`Twilio -> Starting Media Stream for ${streamSid}`.underline.red);
-          ttsService.generate({partialResponseIndex: null, partialResponse: 'Hello! I understand you\'re looking for a pair of AirPods, is that correct?'}, 0);
+          ttsService.generate({partialResponseIndex: null, partialResponse: 'Hello! This is Dr. Leena from 3Z Bio.'}, 0);
         });
       } else if (msg.event === 'media') {
         transcriptionService.send(msg.media.payload);
@@ -70,10 +78,9 @@ app.ws('/connection', (ws) => {
         console.log(`Twilio -> Media stream ${streamSid} ended.`.underline.red);
       }
     });
-  
+
     transcriptionService.on('utterance', async (text) => {
-      // This is a bit of a hack to filter out empty utterances
-      if(marks.length > 0 && text?.length > 5) {
+      if (marks.length > 0 && text?.length > 5) {
         console.log('Twilio -> Interruption, Clearing stream'.red);
         ws.send(
           JSON.stringify({
@@ -83,25 +90,24 @@ app.ws('/connection', (ws) => {
         );
       }
     });
-  
+
     transcriptionService.on('transcription', async (text) => {
       if (!text) { return; }
       console.log(`Interaction ${interactionCount} – STT -> GPT: ${text}`.yellow);
       gptService.completion(text, interactionCount);
       interactionCount += 1;
     });
-    
+
     gptService.on('gptreply', async (gptReply, icount) => {
-      console.log(`Interaction ${icount}: GPT -> TTS: ${gptReply.partialResponse}`.green );
+      console.log(`Interaction ${icount}: GPT -> TTS: ${gptReply.partialResponse}`.green);
       ttsService.generate(gptReply, icount);
     });
-  
+
     ttsService.on('speech', (responseIndex, audio, label, icount) => {
       console.log(`Interaction ${icount}: TTS -> TWILIO: ${label}`.blue);
-  
       streamService.buffer(responseIndex, audio);
     });
-  
+
     streamService.on('audiosent', (markLabel) => {
       marks.push(markLabel);
     });
@@ -110,5 +116,6 @@ app.ws('/connection', (ws) => {
   }
 });
 
-app.listen(PORT);
-console.log(`Server running on port ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
